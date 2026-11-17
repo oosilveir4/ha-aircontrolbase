@@ -1,15 +1,11 @@
 """Plataforma climate do AirControlBase."""
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
-
-# CCM21 não lida bem com rajadas de comandos no mesmo bus serial.
-# Esperar antes de mandar o próximo membro evita que comandos sejam descartados.
-_MEMBER_COMMAND_DELAY = 0.8
-# Tempo pro estado propagar de volta antes de pedir refresh ao coordinator.
-_POST_APPLY_REFRESH_DELAY = 2.0
 
 from homeassistant.components.climate import (
     ClimateEntity,
@@ -19,11 +15,14 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import AirControlBaseClient
+from .api import AirControlBaseClient, AirControlBaseError
 from .const import (
     ACB_TO_HA_MODE,
     DOMAIN,
@@ -37,6 +36,8 @@ from .const import (
 from .coordinator import AirControlBaseCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+# O cliente aplica o intervalo entre comandos de todas as entidades da conta.
+_POST_APPLY_REFRESH_DELAY = 2.0
 
 HVAC_MODES = [
     HVACMode.OFF,
@@ -51,7 +52,9 @@ HVAC_MODES = [
 def _default_group_areas(coordinator: AirControlBaseCoordinator) -> list[str]:
     """Padrão: todas as áreas com mais de 1 device."""
     data = coordinator.data or {}
-    return [a["name"] for a in data.get("areas", []) if len(a.get("device_ids", [])) > 1]
+    return [
+        a["name"] for a in data.get("areas", []) if len(a.get("device_ids", [])) > 1
+    ]
 
 
 async def async_setup_entry(
@@ -65,6 +68,8 @@ async def async_setup_entry(
 
     known_devices: set[str] = set()
     known_groups: set[str] = set()
+    registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
 
     def _selected_group_areas() -> list[str]:
         opts = entry.options.get(OPT_GROUP_AREAS)
@@ -85,14 +90,35 @@ async def async_setup_entry(
         selected = set(_selected_group_areas())
         for area in coordinator.data.get("areas", []):
             name = area.get("name") or ""
-            if not name or name in known_groups or name not in selected:
+            area_key = str(
+                area.get("id") or hashlib.sha256(name.encode()).hexdigest()[:16]
+            )
+            if not name or area_key in known_groups or name not in selected:
                 continue
             device_ids = area.get("device_ids") or []
             if len(device_ids) < 2:
                 continue
-            known_groups.add(name)
+            known_groups.add(area_key)
+            unique_id = f"{DOMAIN}_group_{entry.entry_id}_{area_key}"
+            legacy_id = registry.async_get_entity_id(
+                "climate", DOMAIN, f"{DOMAIN}_group_{entry.entry_id}_{_slugify(name)}"
+            )
+            if legacy_id and not registry.async_get_entity_id(
+                "climate", DOMAIN, unique_id
+            ):
+                registry.async_update_entity(legacy_id, new_unique_id=unique_id)
+            legacy_device = device_registry.async_get_device(
+                identifiers={(DOMAIN, f"group_{_slugify(name)}")}
+            )
+            if legacy_device and legacy_device.config_entries == {entry.entry_id}:
+                device_registry.async_update_device(
+                    legacy_device.id,
+                    new_identifiers={(DOMAIN, f"group_{entry.entry_id}_{area_key}")},
+                )
             new.append(
-                AirControlBaseGroupClimate(coordinator, client, entry.entry_id, name)
+                AirControlBaseGroupClimate(
+                    coordinator, client, entry.entry_id, name, area_key
+                )
             )
         if new:
             async_add_entities(new)
@@ -101,7 +127,9 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(_discover))
 
 
-class AirControlBaseClimate(CoordinatorEntity[AirControlBaseCoordinator], ClimateEntity):
+class AirControlBaseClimate(
+    CoordinatorEntity[AirControlBaseCoordinator], ClimateEntity
+):
     """Entidade climate de um AC."""
 
     _attr_has_entity_name = True
@@ -192,7 +220,9 @@ class AirControlBaseClimate(CoordinatorEntity[AirControlBaseCoordinator], Climat
             }
             if d.get("wind") in (None, "", "off"):
                 changes["wind"] = "auto"
-        await self._client.control_device(device_id=self._device_id, current=d, changes=changes)
+        await self._client.control_device(
+            device_id=self._device_id, current=d, changes=changes
+        )
         await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
@@ -261,12 +291,14 @@ class AirControlBaseGroupClimate(
         client: AirControlBaseClient,
         entry_id: str,
         area_name: str,
+        area_key: str,
     ) -> None:
         super().__init__(coordinator)
         self._client = client
         self._area_name = area_name
-        self._slug = _slugify(area_name)
-        self._attr_unique_id = f"{DOMAIN}_group_{entry_id}_{self._slug}"
+        self._area_key = area_key
+        self._entry_id = entry_id
+        self._attr_unique_id = f"{DOMAIN}_group_{entry_id}_{area_key}"
 
     @property
     def _members(self) -> list[dict[str, Any]]:
@@ -274,7 +306,10 @@ class AirControlBaseGroupClimate(
         devices = data.get("devices", {})
         member_ids: list[str] = []
         for area in data.get("areas", []):
-            if area.get("name") == self._area_name:
+            key = str(
+                area.get("id") or hashlib.sha256(area["name"].encode()).hexdigest()[:16]
+            )
+            if key == self._area_key:
                 member_ids = area.get("device_ids") or []
                 break
         return [devices[mid] for mid in member_ids if mid in devices]
@@ -290,7 +325,7 @@ class AirControlBaseGroupClimate(
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
-            identifiers={(DOMAIN, f"group_{self._slug}")},
+            identifiers={(DOMAIN, f"group_{self._entry_id}_{self._area_key}")},
             name=self._area_name,
             manufacturer="AirControlBase",
             model="Grupo (área)",
@@ -306,7 +341,7 @@ class AirControlBaseGroupClimate(
             return HVACMode.OFF
         # se todos no mesmo modo → esse modo; senão → o do primeiro
         modes = {m.get("mode", "cool") for m in on}
-        first = list(modes)[0] if len(modes) == 1 else on[0].get("mode", "cool")
+        first = next(iter(modes)) if len(modes) == 1 else on[0].get("mode", "cool")
         return HVACMode(ACB_TO_HA_MODE.get(first, "cool"))
 
     @property
@@ -333,7 +368,9 @@ class AirControlBaseGroupClimate(
         on = self._on_members
         if not on:
             # mostra alguma referência mesmo desligado
-            temps = [m.get("setTemp") for m in self._members if m.get("setTemp") is not None]
+            temps = [
+                m.get("setTemp") for m in self._members if m.get("setTemp") is not None
+            ]
         else:
             temps = [m.get("setTemp") for m in on if m.get("setTemp") is not None]
         if not temps:
@@ -361,52 +398,41 @@ class AirControlBaseGroupClimate(
             len(members),
             [m.get("id") for m in members],
         )
-        for idx, m in enumerate(members):
-            if idx > 0:
-                await asyncio.sleep(_MEMBER_COMMAND_DELAY)
+        if not members:
+            raise HomeAssistantError(
+                f"Grupo {self._area_name} sem aparelhos disponíveis"
+            )
+        failures: list[str] = []
+        for m in members:
             try:
                 resp = await self._client.control_device(
                     device_id=m["id"], current=m, changes=changes
                 )
                 _LOGGER.info(
-                    "Grupo %s: device %s resposta %s", self._area_name, m.get("id"), resp
+                    "Grupo %s: device %s resposta %s",
+                    self._area_name,
+                    m.get("id"),
+                    resp,
                 )
-            except Exception as err:
+            except AirControlBaseError:
+                failures.append(m["id"])
                 _LOGGER.exception(
-                    "Grupo %s: falha no device %s: %s", self._area_name, m.get("id"), err
+                    "Grupo %s: falha no device %s", self._area_name, m.get("id")
                 )
         await asyncio.sleep(_POST_APPLY_REFRESH_DELAY)
         await self.coordinator.async_request_refresh()
+        if failures:
+            raise HomeAssistantError(
+                f"Grupo {self._area_name}: falha em {len(failures)}/{len(members)} aparelhos: {', '.join(failures)}"
+            )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         _LOGGER.info("Grupo %s: set_hvac_mode(%s)", self._area_name, hvac_mode)
         if hvac_mode == HVACMode.OFF:
             await self._apply_to_all({"power": "n"})
             return
-        # ligando: por membro, força wind=auto se atual era off
         acb_mode = HA_TO_ACB_MODE.get(hvac_mode.value, "cool")
-        members = self._members
-        for idx, m in enumerate(members):
-            if idx > 0:
-                await asyncio.sleep(_MEMBER_COMMAND_DELAY)
-            changes: dict[str, Any] = {"power": "y", "mode": acb_mode}
-            if (m.get("wind") in (None, "", "off")):
-                changes["wind"] = "auto"
-            try:
-                resp = await self._client.control_device(
-                    device_id=m["id"], current=m, changes=changes
-                )
-                _LOGGER.info(
-                    "Grupo %s: device %s (turn_on) resposta %s",
-                    self._area_name, m.get("id"), resp,
-                )
-            except Exception as err:
-                _LOGGER.exception(
-                    "Grupo %s: falha turn_on no device %s: %s",
-                    self._area_name, m.get("id"), err,
-                )
-        await asyncio.sleep(_POST_APPLY_REFRESH_DELAY)
-        await self.coordinator.async_request_refresh()
+        await self._apply_to_all({"power": "y", "mode": acb_mode})
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         _LOGGER.info("Grupo %s: set_fan_mode(%s)", self._area_name, fan_mode)

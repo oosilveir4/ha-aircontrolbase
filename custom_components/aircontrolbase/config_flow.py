@@ -1,4 +1,5 @@
 """Config flow do AirControlBase."""
+
 from __future__ import annotations
 
 import logging
@@ -10,7 +11,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .api import AirControlBaseClient, AuthError
+from .api import AirControlBaseClient, AirControlBaseError, AuthError
 from .const import CONF_ACCOUNT, CONF_PASSWORD, CONF_USER_ID, DOMAIN, OPT_GROUP_AREAS
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,14 +35,57 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._account: str | None = None
         self._password: str | None = None
 
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+        """Atualiza a senha da conta existente sem criar entidades duplicadas."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="reauth_entry_missing")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = AirControlBaseClient(
+                entry.data[CONF_ACCOUNT],
+                user_input[CONF_PASSWORD],
+                entry.data.get(CONF_USER_ID),
+            )
+            try:
+                await client.login()
+                await client.get_details()
+            except AuthError:
+                errors["base"] = "invalid_auth"
+            except AirControlBaseError:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data={
+                        **entry.data,
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_USER_ID: client.user_id,
+                    },
+                )
+            finally:
+                await client.close()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> "AirControlBaseOptionsFlow":
+    ) -> AirControlBaseOptionsFlow:
         return AirControlBaseOptionsFlow(config_entry)
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             self._account = user_input[CONF_ACCOUNT]
@@ -57,15 +101,13 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 msg = str(err).lower()
                 _LOGGER.warning("AirControlBase login falhou: %s", err)
                 if "userid não encontrado" in msg or "userid nao encontrado" in msg:
-                    await client.close()
                     return await self.async_step_userid()
                 errors["base"] = "invalid_auth"
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.exception("Erro inesperado conectando ao AirControlBase: %s", err)
+            except Exception:
+                _LOGGER.exception("Erro inesperado conectando ao AirControlBase")
                 errors["base"] = "cannot_connect"
             else:
                 user_id = client.user_id
-                await client.close()
                 return self.async_create_entry(
                     title=self._account,
                     data={
@@ -74,6 +116,8 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_USER_ID: user_id,
                     },
                 )
+            finally:
+                await client.close()
 
         return self.async_show_form(
             step_id="user",
@@ -81,12 +125,16 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_userid(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_userid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Fallback: pedir userId manualmente se não vier no login."""
         errors: dict[str, str] = {}
         if user_input is not None:
             user_id = user_input[CONF_USER_ID].strip()
-            client = AirControlBaseClient(self._account or "", self._password or "", user_id)
+            client = AirControlBaseClient(
+                self._account or "", self._password or "", user_id
+            )
             try:
                 await client.login()
                 await client.get_details()
@@ -95,7 +143,6 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:  # noqa: BLE001
                 errors["base"] = "cannot_connect"
             else:
-                await client.close()
                 return self.async_create_entry(
                     title=self._account or user_id,
                     data={
@@ -104,6 +151,8 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_USER_ID: user_id,
                     },
                 )
+            finally:
+                await client.close()
 
         return self.async_show_form(
             step_id="userid",
@@ -113,21 +162,27 @@ class AirControlBaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class AirControlBaseOptionsFlow(config_entries.OptionsFlow):
+class AirControlBaseOptionsFlow(
+    getattr(config_entries, "OptionsFlowWithReload", config_entries.OptionsFlow)
+):
     """Opções: escolher quais áreas viram climate de grupo."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    def __init__(self, entry: config_entries.ConfigEntry) -> None:
+        self._entry = entry
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
         # áreas disponíveis vêm do coordinator
-        bucket = (self.hass.data.get(DOMAIN) or {}).get(self.config_entry.entry_id) or {}
+        bucket = (self.hass.data.get(DOMAIN) or {}).get(self._entry.entry_id) or {}
         coordinator = bucket.get("coordinator")
         if coordinator and coordinator.data:
-            area_names = [a["name"] for a in coordinator.data.get("areas", []) if a.get("name")]
+            area_names = [
+                a["name"] for a in coordinator.data.get("areas", []) if a.get("name")
+            ]
         else:
             area_names = []
 
@@ -141,7 +196,8 @@ class AirControlBaseOptionsFlow(config_entries.OptionsFlow):
         else:
             default = []
 
-        current = self.config_entry.options.get(OPT_GROUP_AREAS, default)
+        current = self._entry.options.get(OPT_GROUP_AREAS, default)
+        area_names = list(dict.fromkeys([*area_names, *current]))
 
         schema = vol.Schema(
             {

@@ -8,6 +8,7 @@ Integração nativa para o **AirControlBase / CCM21** (gateway centralizado de a
 
 - **Climate** por AC — on/off, modos (cool, heat, auto, dry, fan_only), velocidade do vento (low/mid/high/auto), temperatura alvo (17–30 °C), temperatura atual.
 - **Sensores de resumo** — ACs em cada modo (cool/heat/fan/stop/lock/error), total.
+- **Código de erro por aparelho** — sensor de diagnóstico: `OK` quando a API retorna `error: "n"`, ou o código bruto (por exemplo `E0`).
 - **Switches de lock** por AC — bloquear controle remoto, modo, modo cool, modo heat, ventilação.
 - **Serviço** `aircontrolbase.refresh` — força poll imediato.
 - **Auto re-login** — detecta `code: 40018` e refaz sessão automaticamente.
@@ -54,6 +55,7 @@ Para cada AC:
 - `switch.<nome_do_ac>_bloquear_modo_resfriar`
 - `switch.<nome_do_ac>_bloquear_modo_aquecer`
 - `switch.<nome_do_ac>_bloquear_ventilação`
+- Sensor de diagnóstico **Código de erro** associado ao mesmo dispositivo.
 
 Para o hub (1 vez):
 - `sensor.acs_resfriando`
@@ -72,6 +74,43 @@ O Home Assistant já oferece:
 - **Automations** e **Scripts** — substituem completamente o agendamento do AirControlBase, com mais flexibilidade (condições, gatilhos, integração com calendário, presença, etc.).
 
 Manter essas features na integração seria duplicar o que o HA já faz melhor.
+
+## Diagnóstico de falhas
+
+O sensor **Código de erro** usa o campo `error` retornado para cada aparelho por
+`/web/userGroup/getDetails`. O valor `n` é apresentado como `OK`; os demais códigos
+são preservados, sem tradução de significado, pois dependem do modelo. Se o campo
+estiver ausente ou vazio, o estado fica desconhecido. Aparelhos removidos ou falhas
+na consulta tornam o sensor indisponível.
+
+O portal também consulta o histórico em `/web/record/deviceLog`, com `type=m` e
+paginação. Esse histórico não é consultado automaticamente pela integração; o
+sensor representa o erro atual, atualizado a cada polling.
+
+A resposta verificada não fornece uma lista separada de condensadoras. Portanto,
+não são criadas entidades de unidades externas a partir de suposições. Conforme o
+[manual do CCM21](https://carrierdobrasil.com.br/wp-content/uploads/2023/07/CCM-21_MIO-MControl-System-C-04-24-view.pdf),
+em ECOSPLIT os códigos EA/EB/EC identificam a condensadora líder/escravas em falha;
+o alarme detalhado deve ser verificado no display da unidade.
+
+## Verificação das correções
+
+Os testes usam Home Assistant 2026.11.2 com transporte HTTP simulado; não comandam
+equipamentos reais:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest -q
+.venv/bin/ruff check custom_components/aircontrolbase tests
+```
+
+Os comandos de todas as entidades de uma conta compartilham uma fila com intervalo
+mínimo de 0,8 s. Alterações confirmadas pela API são preservadas por até 40 s ao
+montar comandos seguintes, para compensar o atraso de propagação; isso não é uma
+confirmação de execução física. Falhas em grupos são informadas ao chamador após
+tentar os demais membros. Grupos existentes migram para identificadores por conta
+e área, preservando os `entity_id` já registrados quando há correspondência.
 
 ## Desenvolvimento
 

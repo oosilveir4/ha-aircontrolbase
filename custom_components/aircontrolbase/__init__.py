@@ -1,13 +1,16 @@
 """Integração AirControlBase (CCM21) para Home Assistant."""
+
 from __future__ import annotations
 
 import logging
 
+from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
-from .api import AirControlBaseClient, AirControlBaseError
+from .api import AirControlBaseClient, AirControlBaseError, AuthError
 from .const import CONF_ACCOUNT, CONF_PASSWORD, CONF_USER_ID, DOMAIN
 from .coordinator import AirControlBaseCoordinator
 from .services import async_register_services, async_unregister_services
@@ -25,24 +28,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = AirControlBaseClient(account, password, user_id)
     try:
         await client.login()
+        coordinator = AirControlBaseCoordinator(hass, client, entry)
+        await coordinator.async_config_entry_first_refresh()
+    except AuthError as err:
+        await client.close()
+        raise ConfigEntryAuthFailed(str(err)) from err
     except AirControlBaseError as err:
         await client.close()
-        _LOGGER.error("Falha no login inicial: %s", err)
+        raise ConfigEntryNotReady(str(err)) from err
+    except BaseException:
+        await client.close()
         raise
-
-    coordinator = AirControlBaseCoordinator(hass, client)
-    await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "client": client,
         "coordinator": coordinator,
     }
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await client.close()
+        raise
     async_register_services(hass)
 
-    # Recarrega entry quando opções mudam (pra criar/remover grupos)
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    # OptionsFlowWithReload foi adicionado após a versão mínima suportada.
+    if not hasattr(config_entries, "OptionsFlowWithReload"):
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     return True
 
 

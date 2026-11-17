@@ -15,6 +15,13 @@
         "data": {
           "user_id": "userId"
         }
+      },
+      "reauth_confirm": {
+        "title": "Entrar novamente",
+        "description": "Informe a nova senha da sua conta AirControlBase.",
+        "data": {
+          "password": "Senha"
+        }
       }
     },
     "error": {
@@ -23,7 +30,9 @@
       "cannot_connect": "Não foi possível conectar ao AirControlBase."
     },
     "abort": {
-      "already_configured": "Esta conta já está configurada."
+      "already_configured": "Esta conta já está configurada.",
+      "reauth_successful": "Reautenticação concluída.",
+      "reauth_entry_missing": "A configuração original não existe mais."
     }
   },
   "options": {
@@ -56,21 +65,25 @@
     "sensor": {
       "acs_cool": { "name": "ACs resfriando" },
       "acs_heat": { "name": "ACs aquecendo" },
-      "acs_fan":  { "name": "ACs em ventilação" },
+      "acs_fan": { "name": "ACs em ventilação" },
       "acs_stop": { "name": "ACs desligados" },
       "acs_lock": { "name": "ACs bloqueados" },
-      "acs_error":{ "name": "ACs com erro" },
-      "acs_total":{ "name": "Total de ACs" }
+      "acs_error": { "name": "ACs com erro" },
+      "acs_total": { "name": "Total de ACs" },
+      "error_code": { "name": "Código de erro" }
     },
     "switch": {
       "lock_remote": { "name": "Bloquear controle remoto" },
-      "lock_mode":   { "name": "Bloquear modo" },
-      "lock_cool":   { "name": "Bloquear modo resfriar" },
-      "lock_heat":   { "name": "Bloquear modo aquecer" },
-      "lock_wind":   { "name": "Bloquear ventilação" }
+      "lock_mode": { "name": "Bloquear modo" },
+      "lock_cool": { "name": "Bloquear modo resfriar" },
+      "lock_heat": { "name": "Bloquear modo aquecer" },
+      "lock_wind": { "name": "Bloquear ventilação" }
     }
   },
   "services": {
-    "refresh": { "name": "Atualizar", "description": "Força um poll imediato do estado dos ACs." }
+    "refresh": {
+      "name": "Atualizar",
+      "description": "Força um poll imediato do estado dos ACs."
+    }
   }
 }

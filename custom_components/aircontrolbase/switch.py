@@ -7,6 +7,7 @@ DESBLOQUEADO. Os tokens padrão são: mode, cool, heat, wind, remote.
 
 Cada switch aqui mapeia um token. ON = bloqueado, OFF = desbloqueado.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -150,22 +151,18 @@ class ACBLockSwitch(CoordinatorEntity[AirControlBaseCoordinator], SwitchEntity):
     def is_on(self) -> bool:
         """ON = bloqueado (token ausente do unlock)."""
         d = self._device or {}
-        unlocked = _parse_unlock(d.get("unlock") or ALL_UNLOCKED)
+        value = d.get("unlock")
+        unlocked = _parse_unlock(ALL_UNLOCKED if value is None else value)
         return self.entity_description.token not in unlocked
 
     async def _set_locked(self, locked: bool) -> None:
         d = self._device or {}
-        unlocked = _parse_unlock(d.get("unlock") or ALL_UNLOCKED)
-        token = self.entity_description.token
-        if locked:
-            unlocked.discard(token)
-        else:
-            unlocked.add(token)
-        new_unlock = _serialize_unlock(unlocked)
         await self._client.control_device(
             device_id=self._device_id,
             current=d,
-            changes={"unlock": new_unlock},
+            changes={},
+            lock_token=self.entity_description.token,
+            locked=locked,
         )
         await self.coordinator.async_request_refresh()
 

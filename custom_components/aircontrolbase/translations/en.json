@@ -15,6 +15,13 @@
         "data": {
           "user_id": "userId"
         }
+      },
+      "reauth_confirm": {
+        "title": "Sign in again",
+        "description": "Enter the new password for your AirControlBase account.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -23,7 +30,9 @@
       "cannot_connect": "Could not reach AirControlBase."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Reauthentication successful.",
+      "reauth_entry_missing": "The original configuration no longer exists."
     }
   },
   "options": {
@@ -56,21 +65,25 @@
     "sensor": {
       "acs_cool": { "name": "ACs cooling" },
       "acs_heat": { "name": "ACs heating" },
-      "acs_fan":  { "name": "ACs in fan mode" },
+      "acs_fan": { "name": "ACs in fan mode" },
       "acs_stop": { "name": "ACs off" },
       "acs_lock": { "name": "ACs locked" },
-      "acs_error":{ "name": "ACs with error" },
-      "acs_total":{ "name": "Total ACs" }
+      "acs_error": { "name": "ACs with error" },
+      "acs_total": { "name": "Total ACs" },
+      "error_code": { "name": "Error code" }
     },
     "switch": {
       "lock_remote": { "name": "Lock IR remote" },
-      "lock_mode":   { "name": "Lock mode" },
-      "lock_cool":   { "name": "Lock cool mode" },
-      "lock_heat":   { "name": "Lock heat mode" },
-      "lock_wind":   { "name": "Lock fan" }
+      "lock_mode": { "name": "Lock mode" },
+      "lock_cool": { "name": "Lock cool mode" },
+      "lock_heat": { "name": "Lock heat mode" },
+      "lock_wind": { "name": "Lock fan" }
     }
   },
   "services": {
-    "refresh": { "name": "Refresh", "description": "Force an immediate state poll." }
+    "refresh": {
+      "name": "Refresh",
+      "description": "Force an immediate state poll."
+    }
   }
 }
