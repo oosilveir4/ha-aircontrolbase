@@ -24,6 +24,14 @@ _COMMAND_INTERVAL = 0.8
 _PENDING_COMMAND_TTL = 40
 
 
+def _as_int(value: Any, default: int) -> int:
+    """Coage para int (a nuvem rejeita temperaturas float no payload de controle)."""
+    try:
+        return round(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class AirControlBaseError(HomeAssistantError):
     """Erro genérico do AirControlBase."""
 
@@ -274,15 +282,11 @@ class AirControlBaseClient:
             "id": int(device_id),
             "power": current.get("power", "n"),
             "mode": current.get("mode", "cool"),
-            "setTemp": current.get("setTemp")
-            if current.get("setTemp") is not None
-            else 24,
+            "setTemp": _as_int(current.get("setTemp"), 24),
             "wind": current.get("wind", "auto"),
             "swing": current.get("swing", "n"),
             "lock": current.get("lock", ""),
-            "factTemp": current.get("factTemp")
-            if current.get("factTemp") is not None
-            else 0,
+            "factTemp": _as_int(current.get("factTemp"), 0),
             "modeLockValue": current.get("modeLockValue", ""),
             "coolLockValue": current.get("coolLockValue", ""),
             "heatLockValue": current.get("heatLockValue", ""),
@@ -290,6 +294,12 @@ class AirControlBaseClient:
             "unlock": current.get("unlock", "mode,cool,heat,wind,remote"),
         }
         control.update(changes)
+        # A nuvem espera inteiros: um setTemp/factTemp float (20.0) faz o comando
+        # ser ignorado quando não é o próprio campo alterado (ex.: ligar).
+        if control.get("setTemp") is not None:
+            control["setTemp"] = _as_int(control["setTemp"], 24)
+        if control.get("factTemp") is not None:
+            control["factTemp"] = _as_int(control["factTemp"], 0)
         data = {
             "userId": self._user_id or "",
             "control": json.dumps(control, separators=(",", ":")),
