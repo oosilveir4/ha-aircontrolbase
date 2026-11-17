@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -38,6 +39,9 @@ from .coordinator import AirControlBaseCoordinator
 _LOGGER = logging.getLogger(__name__)
 # O cliente aplica o intervalo entre comandos de todas as entidades da conta.
 _POST_APPLY_REFRESH_DELAY = 2.0
+# Quanto tempo a UI mostra o valor otimista antes de a confirmação real chegar.
+# Cobre a latência de entrega do comando pela nuvem (~10-16s) com folga.
+OPTIMISTIC_TTL = 30.0
 
 HVAC_MODES = [
     HVACMode.OFF,
@@ -47,6 +51,14 @@ HVAC_MODES = [
     HVACMode.DRY,
     HVACMode.FAN_ONLY,
 ]
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Igualdade tolerante a int/float (setTemp) e strings (power/mode/wind)."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
 
 
 def _default_group_areas(coordinator: AirControlBaseCoordinator) -> list[str]:
@@ -158,12 +170,41 @@ class AirControlBaseClimate(
         self._client = client
         self._device_id = device_id
         self._attr_unique_id = f"{DOMAIN}_{device_id}"
+        # Override otimista: {campo acb: (valor, expiração monotônica)}.
+        self._optimistic: dict[str, tuple[Any, float]] = {}
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @property
     def _device(self) -> dict[str, Any] | None:
         return (self.coordinator.data or {}).get("devices", {}).get(self._device_id)
+
+    def _state(self) -> dict[str, Any]:
+        """Estado do aparelho com o override otimista fresco aplicado por cima."""
+        d = dict(self._device or {})
+        now = time.monotonic()
+        for key, (value, expiry) in self._optimistic.items():
+            if expiry > now:
+                d[key] = value
+        return d
+
+    def _set_optimistic(self, changes: dict[str, Any]) -> None:
+        """Mostra já o valor comandado; reconcilia quando a nuvem confirmar."""
+        expiry = time.monotonic() + OPTIMISTIC_TTL
+        for key, value in changes.items():
+            self._optimistic[key] = (value, expiry)
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        d = self._device or {}
+        now = time.monotonic()
+        for key in list(self._optimistic):
+            value, expiry = self._optimistic[key]
+            confirmed = key in d and _same(d[key], value)
+            if expiry <= now or confirmed:
+                del self._optimistic[key]
+        super()._handle_coordinator_update()
 
     @property
     def available(self) -> bool:
@@ -184,14 +225,14 @@ class AirControlBaseClimate(
 
     @property
     def hvac_mode(self) -> HVACMode:
-        d = self._device or {}
+        d = self._state()
         if d.get("power") == "n":
             return HVACMode.OFF
         return HVACMode(ACB_TO_HA_MODE.get(d.get("mode", "cool"), "cool"))
 
     @property
     def fan_mode(self) -> str | None:
-        d = self._device or {}
+        d = self._state()
         wind = d.get("wind") or "auto"
         return wind if wind in HA_FAN_MODES else "auto"
 
@@ -203,7 +244,7 @@ class AirControlBaseClimate(
 
     @property
     def target_temperature(self) -> float | None:
-        d = self._device or {}
+        d = self._state()
         v = d.get("setTemp")
         return float(v) if v is not None else None
 
@@ -220,6 +261,7 @@ class AirControlBaseClimate(
             }
             if d.get("wind") in (None, "", "off"):
                 changes["wind"] = "auto"
+        self._set_optimistic(changes)
         await self._client.control_device(
             device_id=self._device_id, current=d, changes=changes
         )
@@ -227,6 +269,7 @@ class AirControlBaseClimate(
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         d = self._device or {}
+        self._set_optimistic({"wind": fan_mode})
         await self._client.control_device(
             device_id=self._device_id,
             current=d,
@@ -239,6 +282,7 @@ class AirControlBaseClimate(
         if temp is None:
             return
         d = self._device or {}
+        self._set_optimistic({"setTemp": float(int(temp))})
         await self._client.control_device(
             device_id=self._device_id,
             current=d,
@@ -299,6 +343,40 @@ class AirControlBaseGroupClimate(
         self._area_key = area_key
         self._entry_id = entry_id
         self._attr_unique_id = f"{DOMAIN}_group_{entry_id}_{area_key}"
+        # Override otimista do estado agregado: {campo acb: (valor, expiração)}.
+        self._optimistic: dict[str, tuple[Any, float]] = {}
+
+    def _opt(self, key: str) -> tuple[bool, Any]:
+        item = self._optimistic.get(key)
+        if item is not None and item[1] > time.monotonic():
+            return True, item[0]
+        return False, None
+
+    def _set_optimistic(self, changes: dict[str, Any]) -> None:
+        expiry = time.monotonic() + OPTIMISTIC_TTL
+        for key, value in changes.items():
+            self._optimistic[key] = (value, expiry)
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        members = self._members
+        on = [m for m in members if m.get("power") == "y"]
+        now = time.monotonic()
+        for key in list(self._optimistic):
+            value, expiry = self._optimistic[key]
+            if expiry <= now:
+                del self._optimistic[key]
+                continue
+            if key == "power":
+                confirmed = bool(members) and all(
+                    m.get("power") == value for m in members
+                )
+            else:  # mode/wind/setTemp refletem nos aparelhos ligados
+                confirmed = bool(on) and all(_same(m.get(key), value) for m in on)
+            if confirmed:
+                del self._optimistic[key]
+        super()._handle_coordinator_update()
 
     @property
     def _members(self) -> list[dict[str, Any]]:
@@ -336,6 +414,12 @@ class AirControlBaseGroupClimate(
 
     @property
     def hvac_mode(self) -> HVACMode:
+        has_p, p = self._opt("power")
+        if has_p and p == "n":
+            return HVACMode.OFF
+        has_m, m = self._opt("mode")
+        if has_m and (not has_p or p == "y"):
+            return HVACMode(ACB_TO_HA_MODE.get(m, "cool"))
         on = self._on_members
         if not on:
             return HVACMode.OFF
@@ -346,6 +430,9 @@ class AirControlBaseGroupClimate(
 
     @property
     def fan_mode(self) -> str | None:
+        has_w, w = self._opt("wind")
+        if has_w:
+            return w if w in HA_FAN_MODES else "auto"
         on = self._on_members
         if not on:
             return "auto"
@@ -365,6 +452,9 @@ class AirControlBaseGroupClimate(
 
     @property
     def target_temperature(self) -> float | None:
+        has_t, t = self._opt("setTemp")
+        if has_t:
+            return float(t)
         on = self._on_members
         if not on:
             # mostra alguma referência mesmo desligado
@@ -429,13 +519,16 @@ class AirControlBaseGroupClimate(
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         _LOGGER.info("Grupo %s: set_hvac_mode(%s)", self._area_name, hvac_mode)
         if hvac_mode == HVACMode.OFF:
+            self._set_optimistic({"power": "n"})
             await self._apply_to_all({"power": "n"})
             return
         acb_mode = HA_TO_ACB_MODE.get(hvac_mode.value, "cool")
+        self._set_optimistic({"power": "y", "mode": acb_mode})
         await self._apply_to_all({"power": "y", "mode": acb_mode})
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         _LOGGER.info("Grupo %s: set_fan_mode(%s)", self._area_name, fan_mode)
+        self._set_optimistic({"wind": fan_mode})
         await self._apply_to_all({"wind": fan_mode})
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -443,6 +536,7 @@ class AirControlBaseGroupClimate(
         if temp is None:
             return
         _LOGGER.info("Grupo %s: set_temperature(%s)", self._area_name, temp)
+        self._set_optimistic({"setTemp": float(int(temp))})
         await self._apply_to_all({"setTemp": int(temp)})
 
     async def async_turn_on(self) -> None:

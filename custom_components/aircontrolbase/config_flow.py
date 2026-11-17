@@ -12,7 +12,17 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .api import AirControlBaseClient, AirControlBaseError, AuthError
-from .const import CONF_ACCOUNT, CONF_PASSWORD, CONF_USER_ID, DOMAIN, OPT_GROUP_AREAS
+from .const import (
+    CONF_ACCOUNT,
+    CONF_GATEWAY_HOST,
+    CONF_HYBRID,
+    CONF_LOCAL,
+    CONF_PASSWORD,
+    CONF_USER_ID,
+    DEFAULT_GATEWAY_HOST,
+    DOMAIN,
+    OPT_GROUP_AREAS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -209,6 +219,25 @@ class AirControlBaseOptionsFlow(
                         custom_value=False,
                     )
                 ),
+                vol.Optional(
+                    CONF_HYBRID,
+                    default=self._entry.options.get(
+                        CONF_HYBRID, self._entry.data.get(CONF_HYBRID, False)
+                    ),
+                ): bool,
+                vol.Optional(
+                    CONF_LOCAL,
+                    default=self._entry.options.get(
+                        CONF_LOCAL, self._entry.data.get(CONF_LOCAL, False)
+                    ),
+                ): bool,
+                vol.Optional(
+                    CONF_GATEWAY_HOST,
+                    default=self._entry.options.get(
+                        CONF_GATEWAY_HOST,
+                        self._entry.data.get(CONF_GATEWAY_HOST, DEFAULT_GATEWAY_HOST),
+                    ),
+                ): str,
             }
         )
 

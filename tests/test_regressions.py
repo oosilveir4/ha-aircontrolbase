@@ -215,7 +215,7 @@ async def test_config_flow_closes_client_on_failure(step):
 )
 async def test_setup_closes_client_and_classifies_login_failure(failure, expected):
     api = MagicMock(login=AsyncMock(side_effect=failure), close=AsyncMock())
-    entry = SimpleNamespace(data={"account": "test", "password": "test"})
+    entry = SimpleNamespace(data={"account": "test", "password": "test"}, options={})
     with (
         patch(
             "custom_components.aircontrolbase.AirControlBaseClient", return_value=api
@@ -231,7 +231,7 @@ async def test_setup_closes_client_when_first_refresh_fails():
     coord = MagicMock(
         async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryNotReady())
     )
-    entry = SimpleNamespace(data={"account": "test", "password": "test"})
+    entry = SimpleNamespace(data={"account": "test", "password": "test"}, options={})
     with (
         patch(
             "custom_components.aircontrolbase.AirControlBaseClient", return_value=api

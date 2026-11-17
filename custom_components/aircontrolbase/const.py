@@ -45,5 +45,15 @@ CONF_ACCOUNT  = "account"
 CONF_PASSWORD = "password"
 CONF_USER_ID  = "user_id"
 
+# Modo local (comunicação direta com o gateway, sem nuvem)
+CONF_LOCAL         = "local"
+CONF_GATEWAY_HOST  = "gateway_host"
+CONF_SERVER_PORT   = "server_port"
+DEFAULT_GATEWAY_HOST = "192.168.10.234"
+DEFAULT_SERVER_PORT  = 21880
+
+# Modo híbrido (estado local rápido + comando/metadados pela nuvem)
+CONF_HYBRID = "hybrid"
+
 # Options keys
 OPT_GROUP_AREAS = "group_areas"  # lista de nomes de áreas que terão climate de grupo

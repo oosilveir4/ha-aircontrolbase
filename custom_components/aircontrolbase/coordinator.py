@@ -55,61 +55,65 @@ class AirControlBaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except AirControlBaseError as err:
             raise UpdateFailed(f"API: {err}") from err
+        return parse_details(raw)
 
-        result = raw.get("result")
-        if not isinstance(result, dict) or not isinstance(result.get("areas"), list):
-            raise UpdateFailed("getDetails não retornou uma lista de áreas válida")
-        areas_raw = result["areas"]
-        device_case = result.get("deviceCase") or {}
-        if not isinstance(device_case, dict):
-            raise UpdateFailed("getDetails retornou um resumo inválido")
 
-        devices: dict[str, dict[str, Any]] = {}
-        areas: list[dict[str, Any]] = []
+def parse_details(raw: dict[str, Any]) -> dict[str, Any]:
+    """Converte o getDetails da nuvem no formato interno (devices/areas/summary)."""
+    result = raw.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("areas"), list):
+        raise UpdateFailed("getDetails não retornou uma lista de áreas válida")
+    areas_raw = result["areas"]
+    device_case = result.get("deviceCase") or {}
+    if not isinstance(device_case, dict):
+        raise UpdateFailed("getDetails retornou um resumo inválido")
 
-        for area in areas_raw:
-            if not isinstance(area, dict) or (
-                area.get("data") is not None and not isinstance(area["data"], list)
-            ):
-                raise UpdateFailed("getDetails retornou uma área inválida")
-            area_name = area.get("name") or ""
-            area_id = str(area.get("id") or area.get("aid") or "")
-            device_ids: list[str] = []
-            for d in area.get("data") or []:
-                if not isinstance(d, dict):
-                    raise UpdateFailed("getDetails retornou um aparelho inválido")
-                dev_id = str(d.get("id") or "")
-                if not dev_id:
-                    continue
-                devices[dev_id] = {
-                    "id": dev_id,
-                    "name": d.get("name") or f"Device {dev_id}",
-                    "area": area_name,
-                    "area_id": area_id,
-                    "power": d.get("power") or "n",
-                    "mode": d.get("mode") or "cool",
-                    "wind": d.get("wind") or "auto",
-                    "setTemp": _number(d.get("setTemp")),
-                    "factTemp": _number(d.get("factTemp")),
-                    "lock": d.get("lock") or "",
-                    "unlock": d.get("unlock")
-                    if d.get("unlock") is not None
-                    else "mode,cool,heat,wind,remote",
-                    "swing": d.get("swing") or "n",
-                    "modeLockValue": d.get("modeLockValue") or "",
-                    "coolLockValue": d.get("coolLockValue") or "",
-                    "heatLockValue": d.get("heatLockValue") or "",
-                    "windLockValue": d.get("windLockValue") or "",
-                    "raw": d,
-                }
-                device_ids.append(dev_id)
-            areas.append({"id": area_id, "name": area_name, "device_ids": device_ids})
+    devices: dict[str, dict[str, Any]] = {}
+    areas: list[dict[str, Any]] = []
 
-        return {
-            "devices": devices,
-            "areas": areas,
-            "summary": {
-                key: int(_number(device_case.get(key), 0))
-                for key in ("cool", "heat", "fan", "stop", "lock", "error")
-            },
-        }
+    for area in areas_raw:
+        if not isinstance(area, dict) or (
+            area.get("data") is not None and not isinstance(area["data"], list)
+        ):
+            raise UpdateFailed("getDetails retornou uma área inválida")
+        area_name = area.get("name") or ""
+        area_id = str(area.get("id") or area.get("aid") or "")
+        device_ids: list[str] = []
+        for d in area.get("data") or []:
+            if not isinstance(d, dict):
+                raise UpdateFailed("getDetails retornou um aparelho inválido")
+            dev_id = str(d.get("id") or "")
+            if not dev_id:
+                continue
+            devices[dev_id] = {
+                "id": dev_id,
+                "name": d.get("name") or f"Device {dev_id}",
+                "area": area_name,
+                "area_id": area_id,
+                "power": d.get("power") or "n",
+                "mode": d.get("mode") or "cool",
+                "wind": d.get("wind") or "auto",
+                "setTemp": _number(d.get("setTemp")),
+                "factTemp": _number(d.get("factTemp")),
+                "lock": d.get("lock") or "",
+                "unlock": d.get("unlock")
+                if d.get("unlock") is not None
+                else "mode,cool,heat,wind,remote",
+                "swing": d.get("swing") or "n",
+                "modeLockValue": d.get("modeLockValue") or "",
+                "coolLockValue": d.get("coolLockValue") or "",
+                "heatLockValue": d.get("heatLockValue") or "",
+                "windLockValue": d.get("windLockValue") or "",
+                "raw": d,
+            }
+            device_ids.append(dev_id)
+        areas.append({"id": area_id, "name": area_name, "device_ids": device_ids})
+
+    return {
+        "devices": devices,
+        "areas": areas,
+        "summary": {
+            key: int(_number(device_case.get(key), 0))
+            for key in ("cool", "heat", "fan", "stop", "lock", "error")
+        },
+    }
